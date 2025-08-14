@@ -1,0 +1,11 @@
+[feishu.urls]
+stock_dict_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl1zHI1iokbDfMe&view=vew45J0xQ0"
+cost_detail_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tblz6DaA0SMDT69k&view=vew3Gt8Jkc"
+dict_cluster_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl5mhrMnN0ao8Bz&view=vew6v55VuN"
+dict_cluster_security_days_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tblS6OQ82zBw8df7&view=vew2h88ZmP"
+overseas_stock_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl2O9SNHUeHmPfE&view=vew4IHfvZH"
+head_stock_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl3mESwSQVN87p2&view=vew5q0ewtR"
+local_stock_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl3CgWEGYYZ1HPC&view=vew1cVp38a"
+purchase_in_transit_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl4k0zW2f0zXQ9d&view=vew3m3a1a9"
+ozon_local_inventory_fill_url = "https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl3eqqgEzyjMkd9&view=vew36H8RRn"
+ozon_inventory_purchase_url ="https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl5FH77jwAWnm4S&view=vew5TWuGAM"
