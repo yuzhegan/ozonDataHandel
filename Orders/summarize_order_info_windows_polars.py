@@ -256,6 +256,11 @@ def summarize_order_windows(
 
     # Convert results to Polars DataFrame
     df = pl.DataFrame(results) if results else pl.DataFrame({})
+    # 加入日期列
+    if df.height > 0:
+        df = df.with_columns(
+            pl.lit(target_date).alias("target_date"),
+        )
     if return_stats:
         return {"data": df, "groups_count": df.height}
     return df

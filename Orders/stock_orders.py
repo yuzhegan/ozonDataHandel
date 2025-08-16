@@ -9,9 +9,9 @@ from typing import Sequence, List, Optional
 import polars as pl
 from icecream import ic
 
-from calculate_daily_weight_polars import calculate_weighted_daily_sales, calculate_dynamic_daily_sales
-from summarize_order_info_windows_polars import summarize_order_windows
-from summarize_peak_daily_sales_polars import summarize_peak_daily_sales
+from Orders.calculate_daily_weight_polars import calculate_weighted_daily_sales, calculate_dynamic_daily_sales
+from Orders.summarize_order_info_windows_polars import summarize_order_windows
+from Orders.summarize_peak_daily_sales_polars import summarize_peak_daily_sales
 
 
 @dataclass
@@ -78,6 +78,7 @@ class OrderSummaryGenerator:
 
         # 2) 动态日销（按剔除“货号”后的键做聚合，与你当前脚本一致）
         daily_keys = self._build_daily_group_fields(group_fields)
+        print("daily_keys=======>", daily_keys)
         df_daily = calculate_dynamic_daily_sales(
             df_windows,
             windows=list(self.cfg.windows),
@@ -88,7 +89,7 @@ class OrderSummaryGenerator:
 
         # 将动态日销并回窗口汇总；注意只按 daily_keys 连接（你的原脚本同样这样做）
         print("daily_keys", daily_keys)
-        df_joined = df_windows.join(df_daily, how="left", on=daily_keys)
+        df_joined = df_windows.join(df_daily, how="left", on=daily_keys).fill_nan(0)
 
         # 3) 峰值日销（近 N 天）
         df_peak = summarize_peak_daily_sales(
@@ -110,7 +111,7 @@ class OrderSummaryGenerator:
             # 如果 group_fields 包含 '配送集群'，不合并28天内销量峰值
             pass
         else:
-            df_final = df_joined.join(df_peak, how="left", on=daily_keys)
+            df_final = df_joined.join(df_peak, how="left", on=daily_keys).fill_nan(0)
         return df_final
 
     # 便捷方法 1：等价你原来的 generate_order_summary()
@@ -126,6 +127,7 @@ class OrderSummaryGenerator:
 
 # ---------------- 使用示例 ----------------
 if __name__ == "__main__":
+    exit()
     cfg = OrderSummaryConfig(
         mongo_uri="mongodb://localhost:27017",
         db_name="ozondatas",
@@ -147,7 +149,9 @@ if __name__ == "__main__":
     # 场景1：按“货号 + Ozon ID”
     df1 = gen.generate_by_sku_and_ozon_id()
     print("final df1", df1.head())
+    df1.write_csv("output_by_sku_and_ozon_id.csv")
 
     # 场景2：按“货号 + Ozon ID + 配送集群”
     df2 = gen.generate_by_sku_ozon_id_and_cluster()
+    df2.write_csv("output_by_sku_ozon_id_and_cluster.csv")
     print("final df2", df2.head())

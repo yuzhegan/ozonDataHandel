@@ -441,6 +441,104 @@ def polars_to_records_by_schema(
 
     return out
 
+import polars as pl
+import datetime, time, re
+
+def df_to_feishu_records(df: pl.DataFrame) -> list[dict]:
+    """
+    将 Polars DataFrame 转换为飞书多维表格 records 列表格式
+    - 保持原有数据类型 (int 还是 int, str 还是 str)
+    - 日期或日期字符串会转换成 13 位时间戳
+    """
+    def to_timestamp(v):
+        """转成毫秒级时间戳"""
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            return int(time.mktime(v.timetuple()) * 1000)
+        elif isinstance(v, str):
+            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                try:
+                    dt = datetime.datetime.strptime(v, fmt)
+                    return int(time.mktime(dt.timetuple()) * 1000)
+                except Exception:
+                    continue
+            return v  # 解析失败，保持原字符串
+        return v
+
+    records = []
+    for row in df.to_dicts():
+        fields = {}
+        for k, v in row.items():
+            if v is None:
+                fields[k] = None
+            elif isinstance(v, (datetime.date, datetime.datetime)):
+                fields[k] = to_timestamp(v)
+            elif isinstance(v, str) and re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}", v):
+                fields[k] = to_timestamp(v)
+            elif isinstance(v, float):
+                # 如果是整数形式的 float，转成 int
+                if v.is_integer():
+                    fields[k] = int(v)
+                else:
+                    fields[k] = v
+            else:
+                fields[k] = v
+        records.append({"fields": fields})
+
+    return records
+
+
+import json
+import lark_oapi as lark
+from lark_oapi.api.bitable.v1 import *
+
+def insert_records_to_feishu(app_id: str, app_secret: str, table_url, records: list[dict]):
+    """
+    批量插入记录到飞书多维表格
+
+    :param client: 已初始化的 lark.Client
+    :param app_token: 多维表格应用 app_token
+    :param table_id: 表格 ID
+    :param records: 待插入的数据，每个元素是 dict，格式示例:
+                    {
+                        "文本": "测试内容",
+                        "数字": 100,
+                        "日期": 1674206443000,   # 13位时间戳
+                        "单选": "选项1"
+                    }
+    """
+    app_token, table_id = parse_app_and_table_from_url(table_url)
+     # 创建client
+    client = lark.Client.builder() \
+        .app_id(app_id) \
+        .app_secret(app_secret) \
+        .log_level(lark.LogLevel.DEBUG) \
+        .build()
+
+    # 构造请求对象
+    request: BatchCreateAppTableRecordRequest = BatchCreateAppTableRecordRequest.builder() \
+        .app_token('N5cFb1e6Za8gShsw6gnc7FWYnod') \
+        .table_id('tbl5FH77jwAWnm4S') \
+            .request_body(BatchCreateAppTableRecordRequestBody.builder()
+                .records(records)  # 直接传入 records 列表
+                .build()) \
+            .build()
+
+        # 发起请求
+    response: BatchCreateAppTableRecordResponse = client.bitable.v1.app_table_record.batch_create(request)
+
+    # 处理失败返回
+    if not response.success():
+        lark.logger.error(
+                        f"client.bitable.v1.app_table_record.batch_create failed, code: {response.code}, msg: {response.msg}, log_id: {response.get_log_id()}, resp: \n{json.dumps(json.loads(response.raw.content), indent=4, ensure_ascii=False)}")
+        return
+
+    # 处理业务结果
+    lark.logger.info(lark.JSON.marshal(response.data, indent=4))
+
+    return response.data
+
+
+
 # ========== 5) 读取与示例 ==========
 
 # utils/feishu_records_polars.py

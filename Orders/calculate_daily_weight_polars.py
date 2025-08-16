@@ -235,7 +235,7 @@ def calculate_dynamic_daily_sales(
             if sum_val is None:
                 sum_val = 0
             try:
-                daily_sales += (float(sum_val) / float(w)) * weights[w]
+                daily_sales += int((float(sum_val) / float(w)) * weights[w])
             except Exception:
                 continue
         # Compose the result dict with all group identifiers

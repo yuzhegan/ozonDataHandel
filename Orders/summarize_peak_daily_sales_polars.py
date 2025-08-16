@@ -261,6 +261,8 @@ def summarize_peak_daily_sales(
         row["max_daily_sales"] = doc["max_daily_sales"]
         flattened.append(row)
     df = pl.DataFrame(flattened)
+    if 'max_daily_sales' in df.columns:
+        df = df.with_columns(pl.col("max_daily_sales").fill_null(0).cast(pl.Int64))
     return df
 
 if __name__ == "__main__":
