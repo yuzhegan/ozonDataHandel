@@ -3,12 +3,6 @@
 # @Time: 2025-08-12
 # @File: %
 #!/usr/bin/env
-# ===== Feishu x Polars: compatibility helpers (drop-in) =====
-# encoding='utf-8
-
-# @Time: 2025-08-12
-# @File: %
-#!/usr/bin/env
 # feishu_flatten.py
 # feishu_type_safe_flatten.py
 from __future__ import annotations
@@ -80,7 +74,7 @@ def fetch_field_schema(
     client: lark.Client,
     app_token: str,
     table_id: str,
-    page_size: int = 100,
+    page_size: int = 1000,
     max_pages: int = 20,            # 止损：最多翻 20 页
 ) -> Dict[str, Dict[str, Any]]:
     """
@@ -449,6 +443,83 @@ def polars_to_records_by_schema(
 
 import polars as pl
 import datetime, time, re
+import re
+import time
+import math
+import datetime
+import decimal
+from typing import Iterable, Mapping, Optional
+
+import polars as pl
+def df_to_feishu_payload(df: pl.DataFrame) -> dict:
+    import re, time, math, datetime
+
+    def to_ts_ms(v):
+        if isinstance(v, (datetime.date, datetime.datetime)):
+            if isinstance(v, datetime.date) and not isinstance(v, datetime.datetime):
+                v = datetime.datetime(v.year, v.month, v.day)
+            return int(time.mktime(v.timetuple()) * 1000)
+        if isinstance(v, str):
+            if re.fullmatch(r"\d{13}", v):  # 毫秒
+                return int(v)
+            if re.fullmatch(r"\d{10}", v):  # 秒
+                return int(v) * 1000
+            for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+                try:
+                    return int(time.mktime(datetime.datetime.strptime(v, fmt).timetuple()) * 1000)
+                except Exception:
+                    pass
+        return v
+
+    records = []
+    for row in df.to_dicts():
+        fields = {}
+        for k, v in row.items():
+            if v is None:
+                fields[k] = None
+            elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                fields[k] = None
+            elif isinstance(v, float) and v.is_integer():
+                fields[k] = int(v)
+            elif isinstance(v, (datetime.date, datetime.datetime)) or (
+                isinstance(v, str) and re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}", v)
+            ):
+                fields[k] = to_ts_ms(v)
+            else:
+                fields[k] = v
+        records.append({"fields": fields})
+    return {"records": records}
+
+
+from lark_oapi import Client, LogLevel
+from lark_oapi.api.bitable.v1 import (
+    BatchCreateAppTableRecordRequest,
+    BatchCreateAppTableRecordRequestBody,
+    AppTableRecord,
+)
+
+def xxbatch_create_records(app_id: str, app_secret: str, table_url: str, payload: dict):
+    """
+    payload 形如 {"records":[{"fields": {...}}, ...]}
+    """
+    client = Client.builder().app_id(app_id).app_secret(app_secret).log_level(LogLevel.INFO).build()
+    app_token, table_id = parse_app_and_table_from_url(table_url)
+
+    # ✅ 用 builder，而不是 AppTableRecord(fields=...)
+    records = [AppTableRecord.builder().fields(item["fields"]).build() for item in payload["records"]]
+
+    body = BatchCreateAppTableRecordRequestBody.builder().records(records).build()
+
+    req = BatchCreateAppTableRecordRequest.builder() \
+        .app_token(app_token) \
+        .table_id(table_id) \
+        .request_body(body) \
+        .build()
+
+    resp = client.bitable.v1.app_table_record.batch_create(req)
+    if not resp.success():
+        raise RuntimeError(f"batch_create failed: code={resp.code}, msg={resp.msg}, log_id={resp.get_log_id()}")
+    return resp.data
 
 def df_to_feishu_records(df: pl.DataFrame) -> list[dict]:
     """
@@ -492,57 +563,114 @@ def df_to_feishu_records(df: pl.DataFrame) -> list[dict]:
 
     return records
 
+import re, math, time, datetime
+from lark_oapi import Client, LogLevel
+from lark_oapi.api.bitable.v1 import (
+    ListAppTableFieldRequest,
+    BatchCreateAppTableRecordRequest,
+    BatchCreateAppTableRecordRequestBody,
+    AppTableRecord,
+)
 
-import json
-import lark_oapi as lark
-from lark_oapi.api.bitable.v1 import *
+# 1) 从表链接 URL 提取 app_token / table_id
+def parse_bitable_url(url: str) -> tuple[str, str]:
+    m1 = re.search(r"/base/([A-Za-z0-9]+)", url)
+    m2 = re.search(r"[?&]table=(tbl[A-Za-z0-9]+)", url)
+    if not (m1 and m2):
+        raise ValueError(f"无法从 URL 提取 app_token/table_id: {url}")
+    return m1.group(1), m2.group(1)
 
-def insert_records_to_feishu(app_id: str, app_secret: str, table_url, records: list[dict]):
-    """
-    批量插入记录到飞书多维表格
+# 2) 列名规范化（去不可见空格、统一括号等）
+def norm_name(s: str) -> str:
+    if s is None:
+        return ""
+    s = s.replace("\u00A0", "").replace("\u200B", "").strip()  # 不换行/零宽空格
+    s = re.sub(r"\s+", "", s)                                  # 所有空白
+    s = s.replace("（", "(").replace("）", ")")                 # 全/半角括号
+    return s
 
-    :param client: 已初始化的 lark.Client
-    :param app_token: 多维表格应用 app_token
-    :param table_id: 表格 ID
-    :param records: 待插入的数据，每个元素是 dict，格式示例:
-                    {
-                        "文本": "测试内容",
-                        "数字": 100,
-                        "日期": 1674206443000,   # 13位时间戳
-                        "单选": "选项1"
-                    }
-    """
-    app_token, table_id = parse_app_and_table_from_url(table_url)
-     # 创建client
-    client = lark.Client.builder() \
-        .app_id(app_id) \
-        .app_secret(app_secret) \
-        .log_level(lark.LogLevel.DEBUG) \
-        .build()
+# 3) 拉取表字段，建立「规范化列名 -> (真实名, field_id)」映射
+def build_name_to_field_id(client: Client, app_token: str, table_id: str) -> dict[str, tuple[str, str]]:
+    req = ListAppTableFieldRequest.builder().app_token(app_token).table_id(table_id).page_size(500).build()
+    resp = client.bitable.v1.app_table_field.list(req)
+    if not resp.success():
+        raise RuntimeError(f"list fields failed: code={resp.code}, msg={resp.msg}")
+    mapping = {}
+    for f in resp.data.items:
+        mapping[norm_name(f.field_name)] = (f.field_name, f.field_id)
+    return mapping
 
-    # 构造请求对象
-    request: BatchCreateAppTableRecordRequest = BatchCreateAppTableRecordRequest.builder() \
+# 4) 常用：日期 / 字符串日期 转毫秒时间戳
+def to_ts_ms(v):
+    if isinstance(v, (datetime.date, datetime.datetime)):
+        if isinstance(v, datetime.date) and not isinstance(v, datetime.datetime):
+            v = datetime.datetime(v.year, v.month, v.day)
+        return int(time.mktime(v.timetuple()) * 1000)
+    if isinstance(v, str):
+        if re.fullmatch(r"\d{13}", v): return int(v)
+        if re.fullmatch(r"\d{10}", v): return int(v) * 1000
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+            try:
+                return int(time.mktime(datetime.datetime.strptime(v, fmt).timetuple()) * 1000)
+            except Exception:
+                pass
+        m = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$", v)
+        if m:
+            y, mo, d = map(int, m.groups())
+            dt = datetime.datetime(y, mo, d)
+            return int(time.mktime(dt.timetuple()) * 1000)
+    return v
+
+# 5) 把 DataFrame 转成按 field_id 的 payload（自动跳过目标表不存在的列）
+def df_to_records_by_field_id(df, name2id: dict[str, tuple[str, str]], *, fill_nan_with=None) -> dict:
+    missing_cols = set()
+    records = []
+    for row in df.to_dicts():
+        fields_by_id = {}
+        for k, v in row.items():
+            nk = norm_name(k)
+            if nk not in name2id:
+                missing_cols.add(k)
+                continue  # 目标表里没有的列，自动跳过
+            _, fid = name2id[nk]
+
+            # 值处理
+            if v is None:
+                vv = fill_nan_with if fill_nan_with is not None else None
+            elif isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                vv = fill_nan_with if fill_nan_with is not None else None
+            elif isinstance(v, float) and v.is_integer():
+                vv = int(v)
+            elif isinstance(v, (datetime.date, datetime.datetime)) or (
+                isinstance(v, str) and re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}", v)
+            ):
+                vv = to_ts_ms(v)
+            else:
+                vv = v
+
+            fields_by_id[fid] = vv
+
+        records.append({"fields": fields_by_id})
+
+    if missing_cols:
+        print("⚠️ 这些列在目标表中未匹配到（已自动跳过）：", sorted(missing_cols))
+
+    return {"records": records}
+
+# 6) 正确的批量写入（用 builder）
+def batch_create_records(app_id: str, app_secret: str, app_token: str, table_id: str, payload: dict):
+    client = Client.builder().app_id(app_id).app_secret(app_secret).log_level(LogLevel.INFO).build()
+    model_records = [AppTableRecord.builder().fields(item["fields"]).build() for item in payload["records"]]
+    body = BatchCreateAppTableRecordRequestBody.builder().records(model_records).build()
+    req = BatchCreateAppTableRecordRequest.builder() \
         .app_token(app_token) \
         .table_id(table_id) \
-            .request_body(BatchCreateAppTableRecordRequestBody.builder()
-                .records(records)  # 直接传入 records 列表
-                .build()) \
-            .build()
-
-        # 发起请求
-    response: BatchCreateAppTableRecordResponse = client.bitable.v1.app_table_record.batch_create(request)
-
-    # 处理失败返回
-    if not response.success():
-        lark.logger.error(
-                        f"client.bitable.v1.app_table_record.batch_create failed, code: {response.code}, msg: {response.msg}, log_id: {response.get_log_id()}, resp: \n{json.dumps(json.loads(response.raw.content), indent=4, ensure_ascii=False)}")
-        return
-
-    # 处理业务结果
-    lark.logger.info(lark.JSON.marshal(response.data, indent=4))
-
-    return response.data
-
+        .request_body(body) \
+        .build()
+    resp = client.bitable.v1.app_table_record.batch_create(req)
+    if not resp.success():
+        raise RuntimeError(f"batch_create failed: code={resp.code}, msg={resp.msg}, log_id={resp.get_log_id()}")
+    return resp.data
 
 
 # ========== 5) 读取与示例 ==========

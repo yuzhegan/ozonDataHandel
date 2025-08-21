@@ -230,8 +230,8 @@ def summarize_order_windows(
             }
         }
     )
-    print(f"Processing records from {start_dt_max} to {end_dt_exclusive} "
-          f"for target date {target_date} with windows {windows}")
+    # print(f"Processing records from {start_dt_max} to {end_dt_exclusive} "
+          # f"for target date {target_date} with windows {windows}")
     # Stage 3: group by the specified fields and compute sums for
     # each window.  Build the _id document from the group fields.
     group_id: Dict[str, str] = {gf: f"${gf}" for gf in group_fields}

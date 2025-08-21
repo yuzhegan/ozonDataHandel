@@ -227,7 +227,7 @@ def calculate_dynamic_daily_sales(
                 weights[w] = avg_daily[w] / total_top_avg
             else:
                 weights[w] = 0.0
-        print(f"Group: {group_value}, Weights: {weights}")
+        # print(f"Group: {group_value}, Weights: {weights}")
         # Compute the weighted daily sales
         daily_sales = 0.0
         for w in windows:

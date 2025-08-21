@@ -26,6 +26,49 @@ def genbaseinfo(baseinfo_table_url:str ,datas:list, app_id:str, app_secret:str):
     #取成本明细df表前5列
     return df
 
+# step1.1 获取集群表格信息
+def gen_cluster_dict(cluster_dict_table_url, app_id, app_secret):
+    """
+    获取集群表格信息
+    :param cluster_dict_table_url: 集群表格的URL
+    :param app_id: 飞书应用的app_id
+    :param app_secret: 飞书应用的app_secret
+    :return: 返回集群信息的DataFrame
+    """
+    client = build_client(app_id, app_secret)
+    app_token, table_id = parse_app_and_table_from_url(cluster_dict_table_url)
+    field_schema = fetch_field_schema(client, app_token, table_id)
+    records = search_records(client, app_token, table_id)
+    df = records_to_polars_by_schema(records, field_schema)
+    try:
+        df = df.drop('record_id')
+    except Exception as e:
+        print(f"Error dropping record_id: {e}")
+    return df
+
+# step5 获取集群表格信息
+def gen_cluster_safedays(cluster_safe_days_table_url, app_id, app_secret):
+    """
+    获取集群表格信息
+    :param cluster_dict_table_url: 集群表格的URL
+    :param app_id: 飞书应用的app_id
+    :param app_secret: 飞书应用的app_secret
+    :return: 返回集群信息的DataFrame
+    """
+    client = build_client(app_id, app_secret)
+    app_token, table_id = parse_app_and_table_from_url(cluster_safe_days_table_url)
+    field_schema = fetch_field_schema(client, app_token, table_id)
+    records = search_records(client, app_token, table_id)
+    df = records_to_polars_by_schema(records, field_schema)
+    df = df.select(["集群中俄", "FBO安全天数"])
+    df = df.with_columns(
+            pl.col('FBO安全天数').cast(pl.Int64, strict=False).alias('FBO安全天数'),
+            )
+    try:
+        df = df.drop('record_id')
+    except Exception as e:
+        print(f"Error dropping record_id: {e}")
+    return df
 
 
 # 从飞书中查询记录成本表记录,获取datafarme的基础信息需要的字段
@@ -94,20 +137,35 @@ def step1_genbasic(dates):
             )
     return basicinfo
 # 2. 获取FBO的库存信息 
-def step2_fboInventory():
+def step2_fboInventory(group_by=['sku']):
     fboinventory1 = fboInventory()
+    # print(fboinventory1.head(5))
     fboinventory1 = fboinventory1.with_columns(
             pl.col("sku").cast(pl.Utf8)
             )
-    promised_amount = fboinventory1.group_by('sku').agg(
+    if 'warehouse_name' in group_by:
+        from Stocks.warehose2cluster import warehouse2cluster  #ozon官方接口仓库匹配对应的集群
+        cluster = warehouse2cluster(api_key, client_id) #json格式的集群信息 \
+        #cluster[{'id':154,'logistic_clusters':[], 'name':"Москва, МО и Дальние регионы", "type":'ozon'}]
+        ic("f获取到{len(cluster)}条数据")
+        from utils.warehouse_name2cluster import add_cluster_name_column_deep
+        fboinventory1 = add_cluster_name_column_deep(fboinventory1, cluster)
+        # fboinventory1.write_csv('./Stocks/fboinventory1.csv')
+        group_by = ['sku','cluster']
+    promised_amount = fboinventory1.group_by(group_by).agg(
          pl.col('free_to_sell_amount').sum().alias('FBO上架数量(万)'),
          pl.col('promised_amount').sum().alias('FBO越库在途数量(万)'),
             ).fill_null(0)
     return promised_amount
 
 # 3. 将FBO的库存信息与基础信息进行匹配
-def step3_basic_stock_fill(basicinfo, promised_amount):
-    basic_stock_fill = basicinfo.join(promised_amount, how='left', left_on='Ozon ID', right_on='sku').fill_null(0)
+def step3_basic_stock_fill(basicinfo, promised_amount, cluster:bool=False):
+    if not cluster:
+        basic_stock_fill = basicinfo.join(promised_amount, how='left', left_on='Ozon ID', right_on='sku').fill_null(0)
+    else:
+        basic_stock_fill = basicinfo.join(promised_amount, how='left', left_on=['Ozon ID', '集群'], right_on=['sku', 'cluster']).fill_null(0)
+    
+
     return basic_stock_fill
 
 # 4.获取海外仓的库存
@@ -196,7 +254,7 @@ def basic_stock_fill_seasinventory_toucheng_local_purchase(basic_stock_fill_seas
     ).fill_null(0)
     return basic_stock_fill_seasinventory_toucheng_local_purchase
 # 12.获取各个窗口的销量,计算加权日均销量
-def step12_sales_weighted_average(date_field:str="正在处理中", target_dates:list=[]):
+def step12_sales_weighted_average(date_field:str="正在处理中", target_dates:list=[], cluster:bool=False):
     from Orders.stock_orders import OrderSummaryGenerator, OrderSummaryConfig
     result = []
     for date in target_dates:
@@ -219,12 +277,18 @@ def step12_sales_weighted_average(date_field:str="正在处理中", target_dates
         )
         gen = OrderSummaryGenerator(confg)
         # 场景1：按“货号 + Ozon ID”
-        windowsales = gen.generate_by_sku_and_ozon_id()
+        if cluster:
+            windowsales = gen.generate_by_sku_ozon_id_and_cluster()
+        else:
+            windowsales = gen.generate_by_sku_and_ozon_id()
         result.append(windowsales)
     df = pl.concat(result)
     import ast
     raw_rename = cfg['columns']['rename_dict']   # 现在是字符串
     rename_dict = ast.literal_eval(raw_rename)   # 转成真正的 dict
+    # 按集群groupby 没有max_daily_sales,需要删除这个元素
+    if cluster:
+        rename_dict.pop('max_daily_sales', None)
     df = plrenameColumns(df, rename_dict)
 
     return df
@@ -237,38 +301,78 @@ def plrenameColumns(df: pl.DataFrame, rename_dict: dict):
     :return: 重命名后的DataFrame
     """
     return df.rename(rename_dict)
-def calcu_available_days(df, safe_days:int=60):
+from typing import Union
+def calcu_available_days(df, safe_days:Union[int, bool]=60, cluster:bool=False):
     """
     计算可用天数
     :param df: 输入的DataFrame 小数向下取整
     :return: 添加了可用天数列的DataFrame
     """
     df = df.with_columns(
-        ((pl.col('FBO上架数量(万)') / pl.col('每日销量')).cast(pl.Int64))
-            .alias('FBO上架可售天数'),
-        ((pl.col('FBO越库在途数量(万)') / pl.col('每日销量')).cast(pl.Int64))
-            .alias('FBO越库可售天数'),
-        ((pl.col('海外仓在库数量(万)') / pl.col('每日销量')).cast(pl.Int64))
-            .alias('海外仓可售天数'),
-        ((pl.col('7日达在途数量(万)') / pl.col('每日销量')).cast(pl.Int64))
-            .alias('7日到达可售天数'),
+        ((pl.col('FBO上架数量(万)') / pl.col('每日销量'))
+         .fill_nan(0.0)                          # NaN -> 0
+         .cast(pl.Int64, strict=False)           # 非法转换变 null
+         .fill_null(0))                           # null -> 0
+        .alias('FBO上架可售天数'),
+        ((pl.col('FBO越库在途数量(万)') / pl.col('每日销量'))
+         .fill_nan(0)
+         .cast(pl.Int64, strict=False)           # 非法转换变 null
+         .fill_null(0))                           # null -> 0
+        .alias('FBO越库可售天数'),
+        # ((pl.col('海外仓在库数量(万)') / pl.col('每日销量')).cast(pl.Int64))
+        #     .alias('海外仓可售天数'),
+        # ((pl.col('7日达在途数量(万)') / pl.col('每日销量')).cast(pl.Int64))
+        #     .alias('7日到达可售天数'),
     )
-
+    if cluster: #集群的安全天数是从表里读取,上面函数已经处理,不用在设
+        df = df.with_columns(
+                (pl.col('FBO越库可售天数') + pl.col('FBO上架可售天数'))
+                .cast(pl.Int64, strict=False).fill_null(0).alias('FBO越库可售天数'),
+                )
+        return df
+    if '海外仓在库数量(万)' in df.columns:
+        df = df.with_columns(
+                (pl.col('海外仓在库数量(万)') / pl.col('每日销量'))
+                .fill_nan(0.0)                          # NaN -> 0
+                .cast(pl.Int64, strict=False)           # 非法转换变 null
+                .fill_null(0)                           # null -> 0
+                .alias('海外仓可售天数')
+            )
+    if '7日达在途数量(万)' in df.columns:
+        df = df.with_columns(
+            ((pl.col('7日达在途数量(万)') / pl.col('每日销量'))
+             .fill_nan(0.0)                          # NaN -> 0
+             .cast(pl.Int64, strict=False)           # 非法转换变 null
+             .fill_null(0))                           # null -> 0
+            .alias('7日到达可售天数'),
+        )
     if '普快在途数量(万)' in df.columns:
         df = df.with_columns(
-            ((pl.col('普快在途数量(万)') / pl.col('每日销量')).cast(pl.Int64))
-                .alias('普快可售天数'),
+            ((pl.col('普快在途数量(万)') / pl.col('每日销量'))
+             .fill_nan(0.0)                          # NaN -> 0
+             .cast(pl.Int64, strict=False)           # 非法转换变 null
+             .fill_nan(0))                           # null -> 0
+            .alias('普快可售天数'),
         )
     if '普慢在途数量(万)' in df.columns:
         print("True")
         df = df.with_columns(
-            ((pl.col('普慢在途数量(万)') / pl.col('每日销量')).cast(pl.Int64))
+            ((pl.col('普慢在途数量(万)') / pl.col('每日销量'))
+             .fill_nan(0.0)                          # NaN -> 0
+             .cast(pl.Int64, strict=False)           # 非法转换变 null
+             .fill_null(0))                           # null -> 0
                 .alias('普慢可售天数'),
         )
     df = df.with_columns(
-        ((pl.col('本地仓库存数量(万)') / pl.col('每日销量')).cast(pl.Int64))
-            .alias('本地库存可售天数'),
-        ((pl.col('已采购在途数量(万)') / pl.col('每日销量')).cast(pl.Int64))
+        ((pl.col('本地仓库存数量(万)') / pl.col('每日销量'))
+         .fill_nan(0.0)                          # NaN -> 0
+         .cast(pl.Int64, strict=False)           # 非法转换变 null
+         .fill_null(0))                           # null -> 0
+        .alias('本地库存可售天数'),
+        ((pl.col('已采购在途数量(万)') / pl.col('每日销量'))
+         .fill_nan(0.0)                          # NaN -> 0
+         .cast(pl.Int64, strict=False)           # 非法转换变 null
+         .fill_null(0))                           # null -> 0
         .alias('已采购可售天数'),
     )
     #需要累加的列名
@@ -277,10 +381,12 @@ def calcu_available_days(df, safe_days:int=60):
     print("需要累加的列名:", neds_cumulative_cols)
     # 计算累计可售天数
     df = calculate_cumulative_days(df, neds_cumulative_cols)
-
-    df = df.with_columns(
-            pl.lit(int(safe_days)).alias('供应链安全天数'),
-            )
+    if isinstance(safe_days, bool) and safe_days is False: #集群的安全天数是从表里读取,上面函数已经处理,不用在设
+        return df
+    if isinstance(safe_days, int): #供应链安全天数是一个整数
+        df = df.with_columns(
+                pl.lit(int(safe_days)).alias('供应链安全天数'),
+                )
     return df
 def calculate_cumulative_days(df: pl.DataFrame, cols: list) -> pl.DataFrame:
     """
@@ -407,16 +513,160 @@ def calculate_purchased_days(df):
     )
     return df
 
-def records_to_feishu(app_id, app_secret, insert_table, records):
+def records_to_feishu(app_id, app_secret, table_url, records):
     
     data = insert_records_to_feishu(
         app_id = app_id,
         app_secret = app_secret,
-        table_url = insert_table,
+        table_url = table_url,
         records=records
     )
     # print(json.dumps(json.loads(lark.JSON.marshal(data, indent=4)), ensure_ascii=False, indent=4))
     return data
+def write_feishu_ozon_stock_purchase():
+    """
+    将数据插入到飞书表格中
+    """
+    # 1) 基础信息
+    basicinfo_df = step1_genbasic(dates)
+
+    # 2) FBO库存信息
+    fbo_inventory_df = step2_fboInventory()
+
+    # 3) 匹配基础信息与FBO库存
+    basic_stock_fill_df = step3_basic_stock_fill(basicinfo_df, fbo_inventory_df)
+
+    # 4) 海外仓库存
+    overseas_inventory_df = step4_overseas_inventory()
+
+    # 5) 合并 basic_stock_fill 与 overseas_inventory
+    basic_stock_fill_seasinventory_df = step5_basic_stock_fill_seasinventory(
+        basic_stock_fill_df, overseas_inventory_df
+    )
+
+    # 6) 头程库存（普快/普慢），并填0
+    overseas_toucheng_inventory_df = GenoverseasInventory()
+    overseas_toucheng_inventory_df = fill_null_with_zero(overseas_toucheng_inventory_df)
+
+    # 7) 合并头程库存
+    basic_stock_fill_seasinventory_toucheng_df = basic_stock_fill_seasinventory_toucheng(
+        basic_stock_fill_seasinventory_df, overseas_toucheng_inventory_df
+    )
+
+    # 8) 本地仓库存
+    local_inventory_df = local_inventory()
+
+    # 9) 合并本地仓库存
+    basic_stock_fill_seasinventory_toucheng_local_df = basic_stock_fill_seasinventory_toucheng_local(
+        basic_stock_fill_seasinventory_toucheng_df, local_inventory_df
+    )
+
+    # 10) 采购在途库存
+    purchased_inventory_df = purchasedInventory()
+
+    # 11) 合并采购在途
+    basic_stock_fill_seasinventory_toucheng_local_purchase_df = basic_stock_fill_seasinventory_toucheng_local_purchase(
+        basic_stock_fill_seasinventory_toucheng_local_df, purchased_inventory_df
+    )
+
+    # 12) 各窗口销量加权日均
+    windows_saels_average_df = step12_sales_weighted_average(target_dates=dates)
+    windows_saels_average_df = windows_saels_average_df.drop('货号')
+
+    # 13) 合并销量（按 Ozon ID, 日期）
+    merged_df = basic_stock_fill_seasinventory_toucheng_local_purchase_df.join(
+        windows_saels_average_df, how='left', on=['Ozon ID', '日期']
+    ).fill_null(0)
+
+    # 14) 可用天数 + 供应链安全天数
+    available_days_df = calcu_available_days(merged_df, safe_days=int(safe_days))
+
+    # 15) 可促销数量
+    promotable_quantity_df = promotable_quantity(available_days_df)
+
+    # 16) 需采购数量
+    required_purchase_quantity_df = required_purchase_quantity(promotable_quantity_df)
+    try:
+        required_purchase_quantity_df = required_purchase_quantity_df.drop('record_id')
+    except Exception as e:
+        print(f"Error dropping 'record_id': {e}")
+
+    # 17) 计算库存总货值
+    total_value_df = gentotal_value(required_purchase_quantity_df)
+
+    # 18) 加上今日采购的可售天数
+    final_df = calculate_purchased_days(total_value_df)
+
+    # 19) 转飞书 records
+    feishu_records = df_to_feishu_records(final_df)
+    # 20) 写入飞书
+    insert_table = cfg['feishu']['ozon_stock_purchase_table_url']
+    records_to_feishu(app_id, app_secret, insert_table, feishu_records)
+    print("数据已成功插入飞书—Ozon库存采购表")
+
+def write_cluster_purchasetable():
+    # 1. 获取基础信息
+    basicinfo = step1_genbasic(dates)
+    # 1.1 获取影响平均配送时间的集群信息,集群+中文
+    cluster_dict_table_url = cfg['feishu']['cluster_dict_table_url']
+    cluster_dict_df = gen_cluster_dict(cluster_dict_table_url, app_id, app_secret)
+    # 1.2 讲基础信息的每行sku都要加上17个集群中文
+    basicinfo = basicinfo.join(cluster_dict_df, how='cross').fill_null(0)
+    # basicinfo.write_csv('./Stocks/basicinfo_cluster.csv')
+
+    # 2. 获取FBO的库存信息 
+    promised_amount = step2_fboInventory(group_by=['sku','warehouse_name'])
+    # promised_amount.write_csv('./Stocks/promised_amount.csv')
+    # 3. 将FBO的库存信息与基础信息进行匹配
+    basic_stock_fill = step3_basic_stock_fill(basicinfo, promised_amount, cluster=True)
+    # basic_stock_fill.write_csv('./Stocks/basicinfo_cluster_stock_fill.csv')
+    # 4.获取各个窗口的销量,计算加权日均销量
+    windows_saels_average = step12_sales_weighted_average(target_dates=dates, cluster=True)
+    # 删除货号列
+    windows_saels_average = windows_saels_average.drop('货号')
+    print(windows_saels_average.head(5))
+    # 13. 合并basic_stock_fill_seasinventory_toucheng_local_purchase和windows_saels_average,用日期和ozon ID进行连接
+    basic_stock_sales = basic_stock_fill.join(
+        windows_saels_average, how='left',left_on=['Ozon ID', '日期', '集群'] ,right_on=['Ozon ID', '日期', '配送集群']
+    ).fill_null(0)
+    # basic_stock_sales.write_csv('./Stocks/basic_stock_sales.csv')
+    # 5. 获取各集群的安全天数
+    cluster_safe_days_table_url = cfg['feishu']['cluster_safe_days_table_url']
+    cluster_safe_days_df = gen_cluster_safedays(cluster_safe_days_table_url, app_id, app_secret)
+    # 6. 将集群安全天数与基础信息进行匹配
+    basic_stock_fill_windows = basic_stock_sales.join(
+        cluster_safe_days_df, how='left', on='集群中俄'
+    ).fill_null(0)
+    # basic_stock_fill_windows.write_csv('./Stocks/basic_stock_fill_windows.csv')
+    # 7. 计算可用天数并添加供应链安全天数列
+    available_days_df = calcu_available_days(basic_stock_fill_windows, safe_days=False, cluster=True).fill_nan(0)
+    # 8. 计算集群需要补货数量以及ke促销数量
+    available_days_df = available_days_df.with_columns(
+            pl.when(pl.col('FBO安全天数') - pl.col('FBO越库可售天数') > 0)
+            .then((pl.col('FBO安全天数') - pl.col('FBO越库可售天数')) * pl.col('每日销量'))
+            .otherwise(0)
+            .alias('集群需补货数量'),
+    )
+    available_days_df = available_days_df.with_columns(
+            pl.when(pl.col('FBO越库可售天数') - pl.col('FBO安全天数') > 0)
+            .then((pl.col('FBO越库可售天数') - pl.col('FBO安全天数')) * pl.col('每日销量'))
+            .otherwise(0)
+            .alias('可促销数量')
+            )
+    try:
+        available_days_df = available_days_df.drop('record_id')
+    except Exception as e:
+        print(f"Error dropping record_id: {e}")
+    available_days_df.write_csv('./Orders/available_days_df.csv')
+    feishu_record1s = df_to_feishu_records(available_days_df)
+    # with open('./Orders/available_days_df.json', 'w', encoding='utf-8') as f:
+    #     json.dump(feishu_records, f, ensure_ascii=False, indent=4)
+    # 20. 将数据插入到飞书表格中
+    # cluster_dict_table_url = cfg['feishu']['ozon_cluster_stock_table_url']
+    # cluster_dict_table_url = cfg['feishu']['ozon_cluster_stock_table_url']
+    cluster_dict_table_url = 'https://xcn114pn5b7h.feishu.cn/base/N5cFb1e6Za8gShsw6gnc7FWYnod?table=tbl3eqqgEzyjMkd9&view=vew36H8RRn'
+    records_to_feishu(app_id, app_secret, cluster_dict_table_url, feishu_record1s)
+    print("数据已成功写入飞书表格！\n", len(feishu_record1s))
 
 
 if __name__ == "__main__":
@@ -426,64 +676,15 @@ if __name__ == "__main__":
     safe_days = cfg['inventorytable']['safe_days']  # 安全天数
     client_id = cfg['ozon']['client_id']
     api_key = cfg['ozon']['api_key']
+
     baseinfo_table_url = cfg['feishu']['baseinfo_table_url'].strip()
+
+
     # 1. 获取配置文件中的app_id和app_secret (https://open.feishu.cn/app/cli_a819ae6445685013/baseinfo)
     app_id=cfg['feishu']['app_id']  # 'cli_a819ae6445685013'
     app_secret=cfg['feishu']['app_secret']  # 'WZVSbtc80PYSJjDr8CHZDgcbILzKgzW0'
-    # 1. 获取基础信息
-    basicinfo = step1_genbasic(dates)
-    # 2. 获取FBO的库存信息 
-    promised_amount = step2_fboInventory()
-    # 3. 将FBO的库存信息与基础信息进行匹配
-    basic_stock_fill = step3_basic_stock_fill(basicinfo, promised_amount)
-    # 4.获取海外仓的库存
-    overseas_inventory = step4_overseas_inventory()
-    # 5.合并basic_stock_fill和overseas_inventory
-    basic_stock_fill_seasinventory = step5_basic_stock_fill_seasinventory(basic_stock_fill, overseas_inventory)
-    # 6. 获取 头程库存
-    overseas_toucheng_inventory = GenoverseasInventory()
-    # 如果没有普快和普慢在途数量,则填充为0
-    overseas_toucheng_inventory = fill_null_with_zero(overseas_toucheng_inventory)
-    # 7.合并basic_stock_fill_seasinventory和overseas_toucheng_inventory
-    basic_stock_fill_seasinventory_toucheng = basic_stock_fill_seasinventory_toucheng(basic_stock_fill_seasinventory, overseas_toucheng_inventory)
-    # 8.获取本地仓库存
-    local_inventory = local_inventory()
-    # 9.合并basic_stock_fill_seasinventory_toucheng和local_inventory
-    basic_stock_fill_seasinventory_toucheng_local = basic_stock_fill_seasinventory_toucheng_local(basic_stock_fill_seasinventory_toucheng, local_inventory)
-    # 10. 获取采购在途库存
-    purchased_inventory = purchasedInventory()
-    # 11.合并basic_stock_fill_seasinventory_toucheng_local和purchase_inventory
-    basic_stock_fill_seasinventory_toucheng_local_purchase = basic_stock_fill_seasinventory_toucheng_local_purchase(basic_stock_fill_seasinventory_toucheng_local, purchased_inventory)
-    # 12.获取各个窗口的销量,计算加权日均销量
-    windows_saels_average = step12_sales_weighted_average(target_dates=['2025-08-01', '2025-08-02'])
-    # 删除货号列
-    windows_saels_average = windows_saels_average.drop('货号')
-    # 13. 合并basic_stock_fill_seasinventory_toucheng_local_purchase和windows_saels_average,用日期和ozon ID进行连接
-    basic_stock_fill_seasinventory_toucheng_local_purchase_windows = basic_stock_fill_seasinventory_toucheng_local_purchase.join(
-        windows_saels_average, how='left', on=['Ozon ID', '日期']
-    ).fill_null(0)
-    # 14. 计算可用天数并添加供应链安全天数列
-    available_days_df = calcu_available_days(basic_stock_fill_seasinventory_toucheng_local_purchase_windows, safe_days=int(safe_days))
-    # available_days_df.write_csv('./Orders/available_days_df.csv')
-    # 15. 计算可促销数量
-    promotable_quantity_df = promotable_quantity(available_days_df)
-    # 16. 计算需采购数量
-    required_purchase_quantity_df = required_purchase_quantity(promotable_quantity_df)
-    # 去除掉record_id列
-    required_purchase_quantity_df = required_purchase_quantity_df.drop('record_id')
-    # 17. 按照库存计算总货值
-    total_value_df = gentotal_value(required_purchase_quantity_df)
-    # 18. 计算加上今日采购可售天数
-    required_purchase_quantity_df = calculate_purchased_days(total_value_df)
-    required_purchase_quantity_df.write_csv('./Stocks/required_purchase_quantity_df.csv')
-    # 19. DataFrame转成飞书records写入到飞书表格中
-    feishu_records = df_to_feishu_records(required_purchase_quantity_df)
-    # print("数据已成功写入飞书表格！\n", feishu_records)
-    # with open('feishu_records.json', 'w', encoding='utf-8') as f:
-    #     json.dump(feishu_records, f, ensure_ascii=False, indent=4)
-    # 20. 将数据插入到飞书表格中
-    insert_table = cfg['feishu']['ozon_stock_purchase_table_url']
-    records_to_feishu(app_id, app_secret, insert_table, feishu_records)
+    write_feishu_ozon_stock_purchase()
+    write_cluster_purchasetable()  # 生成集群采购表
 
 
 

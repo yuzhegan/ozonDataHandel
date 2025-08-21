@@ -74,21 +74,21 @@ class OrderSummaryGenerator:
             date_format=self.cfg.date_format,
             timezone=self.cfg.timezone,
         )
-        print("df_windows", df_windows.head())
+        # print("df_windows", df_windows.head())
 
         # 2) 动态日销（按剔除“货号”后的键做聚合，与你当前脚本一致）
         daily_keys = self._build_daily_group_fields(group_fields)
-        print("daily_keys=======>", daily_keys)
+        # print("daily_keys=======>", daily_keys)
         df_daily = calculate_dynamic_daily_sales(
             df_windows,
             windows=list(self.cfg.windows),
             group_fields=daily_keys,
             top_k=self.cfg.top_k,
         )
-        print("df_daily", df_daily.head())
+        # print("df_daily", df_daily.head())
 
         # 将动态日销并回窗口汇总；注意只按 daily_keys 连接（你的原脚本同样这样做）
-        print("daily_keys", daily_keys)
+        # print("daily_keys", daily_keys)
         df_joined = df_windows.join(df_daily, how="left", on=daily_keys).fill_nan(0)
 
         # 3) 峰值日销（近 N 天）
@@ -103,7 +103,7 @@ class OrderSummaryGenerator:
             target_date=self.cfg.target_date,
             timezone=self.cfg.timezone,
         )
-        print("df_peak", df_peak.head())
+        # print("df_peak", df_peak.head())
 
         # 4) 合并峰值
         if '配送集群' in group_fields:

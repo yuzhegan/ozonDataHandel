@@ -186,7 +186,7 @@ def summarize_peak_daily_sales(
     # the beginning of the day following target_dt.
     start_dt = (target_dt - _dt.timedelta(days=days_back - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     end_dt_exclusive = (target_dt + _dt.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    print(f"Lookback window: {start_dt} to {end_dt_exclusive} (exclusive)")
+    # print(f"Lookback window: {start_dt} to {end_dt_exclusive} (exclusive)")
 
     # Build aggregation pipeline
     pipeline: List[Dict[str, Any]] = []
