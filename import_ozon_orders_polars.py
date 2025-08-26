@@ -490,7 +490,7 @@ def import_ozon_orders_polars(
 if __name__ == "__main__":
     # 普通用法：返回插入的行数
     # n = import_ozon_orders_polars("orders.csv", days_back=5)
-    n = import_ozon_orders_polars("orders.csv")
+    n = import_ozon_orders_polars("/Users/mac/Downloads/orders.csv")
     print("inserted:", n)
 
     # 返回统计信息

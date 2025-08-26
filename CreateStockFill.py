@@ -9,6 +9,7 @@ from Feishu.feishu import query_records
 from utils.feishu_records_polars import *
 import polars as pl
 import lark_oapi as lark
+from utils.polarsdup2mongo import insert_polars_df_to_mongo
 def genbaseinfo(baseinfo_table_url:str ,datas:list, app_id:str, app_secret:str):
     table_url = baseinfo_table_url
     client = build_client(app_id, app_secret)
@@ -180,6 +181,9 @@ def step4_overseas_inventory():
     app_secret = _cfg['feishu']['app_secret']
     overseas_inventory = genfeishu_TableDatas(overseas_table_url, app_id, app_secret, list_text_strategy='')
     overseas_inventory = overseas_inventory.with_columns(
+            pl.col('数量').cast(pl.Int64, strict=False)  # 确保数量列是整数类型
+            )
+    overseas_inventory = overseas_inventory.with_columns(
         pl.col('fnsku').cast(pl.Utf8).str.replace('OZN', '').replace('"', '').alias('fnsku')
     ).group_by('fnsku').agg(
         pl.col('数量').sum().alias('海外仓在库数量(万)'),
@@ -321,6 +325,20 @@ def calcu_available_days(df, safe_days:Union[int, bool]=60, cluster:bool=False):
     :param df: 输入的DataFrame 小数向下取整
     :return: 添加了可用天数列的DataFrame
     """
+    num_cols = [
+        'FBO上架数量(万)', 'FBO越库在途数量(万)', '海外仓在库数量(万)',
+        '7日达在途数量(万)', '普快在途数量(万)', '普慢在途数量(万)',
+        '本地仓库存数量(万)', '已采购在途数量(万)', '每日销量'
+    ]
+    df = df.with_columns([
+        pl.when(pl.col(c).is_null())
+          .then(None)
+          .otherwise(pl.col(c))
+          .cast(pl.Float64, strict=False)
+          .alias(c)
+        for c in num_cols
+        if c in df.columns
+    ])
     df = df.with_columns(
         ((pl.col('FBO上架数量(万)') / pl.col('每日销量'))
          .fill_nan(0.0)                          # NaN -> 0
@@ -610,6 +628,8 @@ def run_stock_purchase_to_feishu(
 
     # 5) 海外仓库存
     overseas_inventory_df = step4_overseas_inventory()
+    overseas_inventory_df.write_csv("./Stocks/overseas_inventory.csv")  # 调试用
+
 
     # 6) 合并 basic_stock_fill 与 overseas_inventory
     basic_stock_fill_seasinventory_df = step5_basic_stock_fill_seasinventory(
@@ -667,10 +687,22 @@ def run_stock_purchase_to_feishu(
 
     # 19) 加上今日采购的可售天数
     final_df = calculate_purchased_days(total_value_df)
+    #写入mongodb数据库
+    mongo_uri=_cfg['mongodb']['mongo_uri']
+    db_name=_cfg['mongodb']['db_name']
+    ozon_stock_coll=_cfg['mongodb']['ozon_stock_coll']
+    # 将datafarme插入mongodb
+    res1 = insert_polars_df_to_mongo(
+        available_days_df, mongo_uri, db_name, ozon_stock_coll,
+        md5_fields=["日期", "SKU", "Ozon ID"],
+        md5_field_name="dedup_md5",
+        batch_size=2000,
+    )
+
 
     # 调试落盘
-    if write_intermediate_csv:
-        final_df.write_csv("./Orders/ozon_stock_purchase_final.csv")
+    # if write_intermediate_csv:
+    #     final_df.write_csv("./Orders/ozon_stock_purchase_final.csv")
 
     # 20) 转飞书 records 并写入
     feishu_records = df_to_feishu_records(final_df)
@@ -744,17 +776,17 @@ def run_cluster_available_days_to_feishu(
     cluster_dict_df = gen_cluster_dict(cluster_dict_table_url_cfg, app_id, app_secret)
     basicinfo = basicinfo.join(cluster_dict_df, how="cross").fill_null(0)
 
-    if write_intermediate_csv:
-        basicinfo.write_csv("./Stocks/basicinfo_cluster.csv")
+    # if write_intermediate_csv:
+    #     basicinfo.write_csv("./Stocks/basicinfo_cluster.csv")
 
     # 2.3 FBO 库存信息（按 sku × warehouse 聚合）并匹配
     promised_amount = step2_fboInventory(group_by=["sku", "warehouse_name"])
-    if write_intermediate_csv:
-        promised_amount.write_csv("./Stocks/promised_amount.csv")
+    # if write_intermediate_csv:
+    #     promised_amount.write_csv("./Stocks/promised_amount.csv")
 
     basic_stock_fill = step3_basic_stock_fill(basicinfo, promised_amount, cluster=True)
-    if write_intermediate_csv:
-        basic_stock_fill.write_csv("./Stocks/basicinfo_cluster_stock_fill.csv")
+    # if write_intermediate_csv:
+    #     basic_stock_fill.write_csv("./Stocks/basicinfo_cluster_stock_fill.csv")
 
     # 2.4 销量窗口 & 加权日均销量
     windows_saels_average = step12_sales_weighted_average(target_dates=dates, cluster=True)
@@ -769,8 +801,8 @@ def run_cluster_available_days_to_feishu(
         left_on=["Ozon ID", "日期", "集群"],
         right_on=["Ozon ID", "日期", "配送集群"],
     ).fill_null(0)
-    if write_intermediate_csv:
-        basic_stock_sales.write_csv("./Stocks/basic_stock_sales.csv")
+    # if write_intermediate_csv:
+    #     basic_stock_sales.write_csv("./Stocks/basic_stock_sales.csv")
 
     # 2.6 各集群安全天数表
     cluster_safe_days_df = gen_cluster_safedays(cluster_safe_days_table_url, app_id, app_secret)
@@ -779,8 +811,8 @@ def run_cluster_available_days_to_feishu(
     basic_stock_fill_windows = basic_stock_sales.join(
         cluster_safe_days_df, how="left", on="集群中俄"
     ).fill_null(0)
-    if write_intermediate_csv:
-        basic_stock_fill_windows.write_csv("./Stocks/basic_stock_fill_windows.csv")
+    # if write_intermediate_csv:
+    #     basic_stock_fill_windows.write_csv("./Stocks/basic_stock_fill_windows.csv")
 
     # 2.8 计算可用天数
     available_days_df = calcu_available_days(
@@ -801,12 +833,24 @@ def run_cluster_available_days_to_feishu(
         .alias("可促销数量")
     )
 
+
+
+
     # 2.10 清理多余列
     if "record_id" in available_days_df.columns:
         available_days_df = available_days_df.drop("record_id")
-
-    if write_intermediate_csv:
-        available_days_df.write_csv("./Orders/available_days_df.csv")
+    mongo_uri=_cfg['mongodb']['mongo_uri']
+    db_name=_cfg['mongodb']['db_name']
+    cluster_coll=_cfg['mongodb']['cluster_coll']
+    # 将datafarme插入mongodb
+    res1 = insert_polars_df_to_mongo(
+        available_days_df, mongo_uri, db_name, cluster_coll,
+        md5_fields=["日期", "SKU", "Ozon ID", "集群"],
+        md5_field_name="dedup_md5",
+        batch_size=2000,
+    )
+    # if write_intermediate_csv:
+    #     available_days_df.write_csv("./Orders/available_days_df.csv")
 
     # ===== 3) 转 records 并写入飞书 =====
     feishu_records = df_to_feishu_records(available_days_df)
@@ -822,7 +866,7 @@ def run_cluster_available_days_to_feishu(
 if __name__ == "__main__":
     # ========= 统一放置两个函数的公共参数 =========
     CFG_PATH = "config.ini"
-    DATES = ["2025-08-01"]
+    DATES = ["2025-08-21"]
 
     # 从 config.ini 读取默认目标表 URL（也可在此处覆盖）
     _cfg = configparser.ConfigParser()

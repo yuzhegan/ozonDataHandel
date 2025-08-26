@@ -1,0 +1,22 @@
+services:
+  backend:
+    build: ./backend
+    container_name: pivot-backend-iferr-fixdiv3-repack
+    env_file: [ ./.env ]
+    environment:
+      - PORT=8000
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB=${MONGO_DB}
+      - ALLOWED_COLLECTIONS=${ALLOWED_COLLECTIONS}
+      - PIVOT_PREFS_COLLECTION=${PIVOT_PREFS_COLLECTION}
+    ports: [ "${BACKEND_PORT}:8000" ]
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: pivot-frontend-iferr-fixdiv3-repack
+    env_file: [ ./.env ]
+    environment: [ "API_BASE=${API_BASE}" ]
+    ports: [ "${FRONTEND_PORT}:80" ]
+    depends_on: [ backend ]
+    restart: unless-stopped
