@@ -116,8 +116,19 @@
 			<pre id="log" class="log"></pre>
 			<div class="resize-handle" id="configResize"></div>
 		</div>
-		<div class="panel" style="overflow:auto">
-			<div id="pivotContainer" class="pivot crosshair"></div>
+		<div class="panel">
+			<div class="freeze-controls">
+				<h3>冻结设置</h3>
+				<div class="freeze-inputs">
+					<label>冻结行数: <input id="freezeRows" type="number" min="0" max="10" value="1" title="冻结表头行数(0-10)"></label>
+					<label>冻结列数: <input id="freezeCols" type="number" min="0" max="5" value="0" title="冻结左侧列数(0-5)"></label>
+					<button id="btnApplyFreeze" class="secondary">应用冻结</button>
+					<button id="btnClearFreeze" class="secondary">取消冻结</button>
+				</div>
+			</div>
+			<div class="table-scroll-container">
+				<div id="pivotContainer" class="pivot crosshair"></div>
+			</div>
 		</div>
 	</div>
 	<script src="./app.js"></script>

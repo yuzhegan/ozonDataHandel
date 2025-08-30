@@ -1,0 +1,18 @@
+[project]
+name = "mongo-ads-aggregator"
+version = "0.1.0"
+description = "Aggregate MongoDB ad metrics from opcampaign & mbcampagin with date normalization and robust number parsing."
+authors = [{name="Your Name", email="you@example.com"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "polars>=0.20.0",
+  "pymongo>=4.6.0",
+]
+
+[project.scripts]
+ads-aggregate = "mongo_ads_aggregator.aggregator:_cli"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

@@ -132,7 +132,7 @@ def genfeishu_TableDatas(table_url, app_id: str, app_secret: str, list_text_stra
     return df
 
 # 1. 获取基础信息
-def step1_genbasic(dates):
+def step1_genbasic(dates, _cfg):
     baseinfo_table_url = _cfg['feishu']['baseinfo_table_url']
     app_id = _cfg['feishu']['app_id']
     app_secret = _cfg['feishu']['app_secret']
@@ -618,7 +618,7 @@ def run_stock_purchase_to_feishu(
         raise ValueError("未提供库存采购目标表 URL：请传入 dest_table_url 或在 config.ini 的 [feishu] 中设置 ozon_stock_purchase_table_url")
 
     # 2) 基础信息
-    basicinfo_df = step1_genbasic(dates)
+    basicinfo_df = step1_genbasic(dates, _cfg)
 
     # 3) FBO库存信息
     fbo_inventory_df = step2_fboInventory()
@@ -770,7 +770,7 @@ def run_cluster_available_days_to_feishu(
 
     # ===== 2) 计算流程 =====
     # 2.1 基础信息
-    basicinfo = step1_genbasic(dates)
+    basicinfo = step1_genbasic(dates, _cfg)
 
     # 2.2 拉取“集群字典表”，并与基础信息笛卡尔 JOIN（每个 SKU × 集群）
     cluster_dict_df = gen_cluster_dict(cluster_dict_table_url_cfg, app_id, app_secret)
@@ -866,7 +866,7 @@ def run_cluster_available_days_to_feishu(
 if __name__ == "__main__":
     # ========= 统一放置两个函数的公共参数 =========
     CFG_PATH = "config.ini"
-    DATES = ["2025-08-21"]
+    DATES = ["2025-08-26"]
 
     # 从 config.ini 读取默认目标表 URL（也可在此处覆盖）
     _cfg = configparser.ConfigParser()
